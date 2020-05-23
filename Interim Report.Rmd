@@ -1,0 +1,373 @@
+---
+title: "Interim Report"
+author: "Varun Dua"
+date: "22/05/2020"
+output:
+  word_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Function to load and transform Main Library Loan Data for clustering  
+
+1. Field formats are changed and irrelevant fields are dropped.   
+2. Title, Renewals, Recalls and Auto.Renewals are the important fields that are extracted.  
+
+```{r}
+
+ETLLoan <- function(){
+  # Accessing libraries
+  
+  library(openxlsx)
+  library(tidyr)
+  library(dplyr)
+  library(ggplot2)
+  
+  # Reading base dataset on loan and returns
+  LibraryLoanData <- read.xlsx(xlsxFile = "D:\\Business Analytics Project\\MSc. Business Analytics - Capstone Project Main Library Q1.xlsx", fillMergedCells = TRUE, colNames = TRUE)
+  
+  # Changing format of date columns
+  LibraryLoanData$Loan.Date <- as.Date(LibraryLoanData$Loan.Date, origin = "1899-12-30")
+  LibraryLoanData$Due.Date <- as.Date(LibraryLoanData$Due.Date, origin = "1899-12-30")
+  LibraryLoanData$Return.Date <- as.Date(LibraryLoanData$Return.Date, origin = "1899-12-30")
+  
+  # Removing NA entries in Patron Group and Loan Date
+  LibraryLoanData <- LibraryLoanData %>% drop_na(Patron.Group)
+  LibraryLoanData <- LibraryLoanData %>% drop_na(Loan.Date)
+  
+  # Recording month of loan for each entry in dataset
+  LibraryLoanData$LoanMonth <- strftime(LibraryLoanData$Loan.Date, "%B")
+  LibraryLoanData$DueMonth <- strftime(LibraryLoanData$Due.Date, "%B")
+  
+  SubsetLoanData <- select(LibraryLoanData, c(Title, Renewals, Recalls, Auto.Renewals, LoanMonth))
+  return (SubsetLoanData)
+}
+```
+
+
+# Function to load and transform Main Library Request Data for clustering  
+
+1. Field formats are changed and irrelevant fields are dropped.    
+2. Title and Requests are the important fields that are extracted.  
+
+```{r}
+
+ETLRequest <- function(){
+  # Reading data on Requests
+  LibraryRequestData <- read.xlsx(xlsxFile = "D:\\Business Analytics Project\\MSc. Business Analytics - Capstone Project Requests Main Library.xlsx", fillMergedCells = TRUE, colNames = TRUE)
+  
+  # Changing format of Date
+  LibraryRequestData$Request.Date <- as.Date(LibraryRequestData$Request.Date, origin = "1899-12-30")
+  
+  # Recording month of Request
+  LibraryRequestData$RequestMonth <- strftime(LibraryRequestData$Request.Date, "%B")
+  
+  # Subset of data
+  SubsetRequestData <- select(LibraryRequestData, c(Title, "#.of.requests", RequestMonth))
+  return (SubsetRequestData)
+}
+```  
+
+# Aggregating data based on Month  
+
+1. For clustering, we have aggregated data on a monthly basis. A book's demand fluctuates regularly, and aggregating data over a year will not yield clear insights of the book's demand over a period.  
+2. Additionally, this aggregation will be handy for further tasks of classification and forecasting.  
+
+```{r}
+MonthlyFilter <- function(LoanData, RequestData){
+  # Declaring month names in a vector
+  MonthNames <- c("January","February","March","April","May","June","July","August","September","October","November","December")
+  
+  AggregateData <- data.frame(Title = character(),
+                              Renewals = numeric(),
+                              Recalls = numeric(),
+                              Auto.Renewals = numeric(),
+                              Requests = numeric(),
+                              stringsAsFactors = FALSE)
+  count = 1
+  while (count <= 12){
+    # Filter data according to month
+    MonthlyLoanData <- filter(LoanData, LoanMonth == MonthNames[count])
+    MonthlyRequestData <- filter(RequestData, RequestMonth == MonthNames[count])
+    
+    # Merge Loan and Request data based on Title
+    MergedData<- merge(MonthlyLoanData, MonthlyRequestData, by.x = "Title", by.y = "Title", all.x = TRUE, all.y = TRUE)
+    MergedData[is.na(MergedData)] <- 0
+    
+    # Drop Month Columns
+    FinalData <- select(MergedData, c(Title, Renewals, Recalls, Auto.Renewals, "#.of.requests"))
+    FinalData <- rename(FinalData, Requests = "#.of.requests")
+    
+    GroupedData <- FinalData %>% group_by(Title) %>% summarise(Renewals = sum(Renewals), Recalls = sum(Recalls), Auto.Renewals = sum(Auto.Renewals), Requests = sum(Requests))
+    AggregateData <- rbind(AggregateData, GroupedData)
+    count <- count + 1
+  }
+  return (AggregateData)
+}
+
+```
+
+
+
+# WSS analysis to determine the number of cluster (K)
+
+```{r}
+SSERequests <- function(cluster_data){
+  wss <- numeric(15)
+  for(k in 1:15)
+    wss[k] <- sum(kmeans(cluster_data[,c(3,5)],centers=k,nstart=25)$withinss)
+  plot(1:15, wss, type="b", xlab="Number of Clusters", ylab="Within Sum of Squares")
+}
+```
+
+
+
+# Clustering
+
+```{r}
+clusterRequestData <- function(cluster_data){
+  set.seed(1234)
+  cluster <- kmeans(cluster_data[,c(3,5)],7, nstart = 20)
+  cluster
+  ggplot(cluster_data, aes(Auto.Renewals, Requests)) + geom_point(color = cluster$cluster)
+  cluster_data[,"Cluster1"] = cluster$cluster
+  cluster_data$Demand1<-factor(cluster_data$Cluster1, levels = c(1,2,3,4,5,6,7), labels = c("Moderate", "High", "Low", "High", "High", "Moderate", "High"))
+  cluster_data$LoanPeriod1<-factor(cluster_data$Cluster1, levels = c(1,2,3,4,5,6,7), labels = c("6 Days", "3 Days", "7 Days", "1 Day", "2 Days", "5 Days", "4 Days"))
+  return (cluster_data)
+}
+```
+
+
+
+# WSS analysis to determine the number of cluster (K)
+
+```{r}
+SSERenewals <- function(cluster_data){
+  wss <- numeric(15)
+  for(k in 1:15)
+    wss[k] <- sum(kmeans(cluster_data[,c(2,4)],centers=k,nstart=25)$withinss)
+  plot(1:15, wss, type="b", xlab="Number of Clusters", ylab="Within Sum of Squares")
+}
+```
+
+
+
+# Clustering
+
+```{r}
+clusterRenewalData <- function(cluster_data){
+  set.seed(1234)
+  cluster <- kmeans(cluster_data[,c(2,4)],10, nstart = 20)
+  cluster
+  ggplot(cluster_data, aes(Auto.Renewals, Requests)) + geom_point(color = cluster$cluster)
+  cluster_data[,"Cluster2"] = cluster$cluster
+  cluster_data$Demand2<-factor(cluster_data$Cluster2, levels = c(1,2,3,4,5,6,7,8,9,10), labels = c("High", "Moderate", "High", "Moderate", "Low", "Moderate", "Low", "Moderate", "High", "High"))
+  cluster_data$LoanPeriod2<-factor(cluster_data$Cluster2, levels = c(1,2,3,4,5,6,7,8,9,10), labels = c("2 Days", "3 Days", "2 Days", "3 Days", "6 Days", "5 Days", "7 Days", "5 Days", "2 Days", "1 Day"))
+  return (cluster_data)
+}
+
+```
+
+
+
+# Export Data to CSV
+
+```{r]}
+export <- function(cluster_data){
+  write.csv(cluster_data, file = "Clustered_Data.csv")
+}
+```
+
+
+
+# Decision Tree using Information Gain as the Splitting Criteria
+
+```{r}
+DT_IG_D1 <- function(cluster_data){
+  
+  library(rpart)
+  library(rpart.plot)
+  library(caret)
+  library(caTools)
+  
+  set.seed(123)
+  split = sample.split(cluster_data$Demand1, SplitRatio = 0.8)
+  train = subset(cluster_data, split==TRUE)
+  test = subset(cluster_data, split==FALSE)
+ 
+  trctrl <- trainControl(method = "repeatedcv", number = 10, repeats = 3)
+  set.seed(3333)
+  dtree_fit <- train(Demand1 ~ Requests + Recalls, data = train, method = "rpart",
+                     parms = list(split = "information"),
+                     trControl=trctrl,
+                     tuneLength = 10)
+  dtree_fit
+  prp(dtree_fit$finalModel, box.palette = "Reds", tweak = 1.2)
+  test_pred <- predict(dtree_fit, newdata = test)
+  confusionMatrix(test_pred, test$Demand1)
+}
+
+
+DT_IG_D2 <- function(cluster_data){
+  
+  library(rpart)
+  library(rpart.plot)
+  library(caret)
+  library(caTools)
+  
+  set.seed(123)
+  split = sample.split(cluster_data$Demand2, SplitRatio = 0.8)
+  train = subset(cluster_data, split==TRUE)
+  test = subset(cluster_data, split==FALSE)
+  
+  trctrl <- trainControl(method = "repeatedcv", number = 10, repeats = 3)
+  set.seed(3333)
+  dtree_fit <- train(Demand2 ~ Renewals + Auto.Renewals, data = train, method = "rpart",
+                     parms = list(split = "information"),
+                     trControl=trctrl,
+                     tuneLength = 10)
+  dtree_fit
+  prp(dtree_fit$finalModel, box.palette = "Reds", tweak = 1.2)
+  test_pred <- predict(dtree_fit, newdata = test)
+  confusionMatrix(test_pred, test$Demand2)
+}
+
+DT_IG_L1 <- function(cluster_data){
+  
+  library(rpart)
+  library(rpart.plot)
+  library(caret)
+  library(caTools)
+  
+  set.seed(123)
+  split = sample.split(cluster_data$LoanPeriod1, SplitRatio = 0.8)
+  train = subset(cluster_data, split==TRUE)
+  test = subset(cluster_data, split==FALSE)
+  
+  trctrl <- trainControl(method = "repeatedcv", number = 10, repeats = 3)
+  set.seed(3333)
+  dtree_fit <- train(LoanPeriod1 ~ Requests + Recalls, data = train, method = "rpart",
+                     parms = list(split = "information"),
+                     trControl=trctrl,
+                     tuneLength = 10)
+  dtree_fit
+  prp(dtree_fit$finalModel, box.palette = "Reds", tweak = 1.2)
+  test_pred <- predict(dtree_fit, newdata = test)
+  confusionMatrix(test_pred, test$LoanPeriod1)
+}
+
+DT_IG_L2 <- function(cluster_data){
+  
+  library(rpart)
+  library(rpart.plot)
+  library(caret)
+  library(caTools)
+  
+  set.seed(123)
+  split = sample.split(cluster_data$LoanPeriod2, SplitRatio = 0.8)
+  train = subset(cluster_data, split==TRUE)
+  test = subset(cluster_data, split==FALSE)
+  
+  trctrl <- trainControl(method = "repeatedcv", number = 10, repeats = 3)
+  set.seed(3333)
+  dtree_fit <- train(LoanPeriod2 ~ Renewals + Auto.Renewals, data = train, method = "rpart",
+                     parms = list(split = "information"),
+                     trControl=trctrl,
+                     tuneLength = 10)
+  dtree_fit
+  prp(dtree_fit$finalModel, box.palette = "Reds", tweak = 1.2)
+  test_pred <- predict(dtree_fit, newdata = test)
+  confusionMatrix(test_pred, test$LoanPeriod2)
+}
+
+# Decision Tree using Gini Index as the Splitting Criteria
+
+DT_GI <- function(){
+  library(rpart)
+  install.packages("rpart.plot")
+  library(rpart.plot)
+  library(caret)
+  trctrl <- trainControl(method = "repeatedcv", number = 10, repeats = 3)
+  set.seed(3333)
+  dtree_fit <- train(Cluster ~ Requests + Auto.Renewals + Recalls + Renewals, data = train, method = "rpart",
+                     parms = list(split = "gini"),
+                     trControl=trctrl,
+                     tuneLength = 10)
+  dtree_fit
+  prp(dtree_fit$finalModel, box.palette = "Reds", tweak = 1.2)
+  test_pred <- predict(dtree_fit, newdata = test)
+  confusionMatrix(test_pred, test$Cluster)
+}
+
+```
+
+
+# Discussion   
+
+
+We have clustered data based on two sets of variables:  
+
+- Group 1 - (Requests and Recalls) - This indicates the current heterogeneous demand of books. These variables are immediately affected by changes in demand. For example, any request against a book, reflects immediately in this month's data. Similarly a recall again, is reflected immediately in the data.  
+
+- Group 2 - (Renewals and Auto-Renewals) -  These variables tend to change slowly based on demand. For example, if a book is loaned in a particular month, the renewals and auto-renewals against the book, if any, will be updated in subsequent months. Additionally these fields do not portray demand from indivuduals other than the borrower, limiting its predictive value.  
+
+This differentiation is important for two reasons:  
+1. Group 1 cluster can be used to build models that classify data based on short-term past data (for example previous month's data).  
+2. Group 2 on the other hand, will be effective with long term data (aggregated monthly), for example, 1 years' data aggregated per month.
+
+Together, they can be used to gain better insights of the trends in demand.
+
+
+
+```{r}
+SubsetLoanData = ETLLoan()
+SubsetRequestData = ETLRequest()
+AData <- MonthlyFilter(SubsetLoanData, SubsetRequestData)
+```
+
+# Group 1 cluster based on Requests and Recalls 
+
+Based on the WSS chart (Elbow chart), below, we identified a minimum value of 7 to be the optimum number of clusters for this data (and variables). However, we have used only 3 variables to denote the demand accross these 7 clusters (Low, Moderate, High). The definintion of the range of these labels is subjective, and thus requires feedback on its credibility and feasibility from the stakeholders.
+
+```{r}
+SSERequests(AData)
+```
+
+# Group 2 cluster based on Renewals and Auto-Renewals   
+
+Based on the WSS chart (Elbow chart), below, we identified a minimum value of 10 to be the optimum number of clusters for this data (and variables). However, we have used only 3 variables to denote the demand accross these 10 clusters (Low, Moderate, High). The definintion of the range of these labels is subjective, and thus requires feedback on its credibility and feasibility from the stakeholders.
+
+```{r}
+SSERenewals(AData)
+```
+
+# Clusering Output:  
+
+A snippet of the clusters:
+We have on a trial basis created another field called Loan Period against each set of cluster. This field would eventualy serve as a micro-level classification for prescribing dynamic loan periods. The choice of number of days again is subjective to the requirements of the stakeholders. 
+```{r}
+clusteredRequest <- clusterRequestData(AData)
+ClusteredRenewals <- clusterRenewalData(clusteredRequest)
+```
+
+# Classification  
+
+We built two Decision Tree models for classfication. The difference between the two models is in the splitting criteria. One uses Gini Indec, while the other uses Information Gain. Both the models displayed same results and precision rates, and thus we have decided to go ahead with Information Gain DT model.
+
+We have split the data into 80% train and 20% test.
+The confusion matrices are displayed below.
+
+As we have clustered our data, and carefully marked each cluster with a label, the sample space is divided very accurately and distinctly. Thus, we are observing very high levels of accuracy from all our models.
+
+The Decision trees are displayed as follows:
+
+```{r}
+DT_IG_D1(ClusteredRenewals)
+DT_IG_D2(ClusteredRenewals)
+DT_IG_L1(ClusteredRenewals)
+DT_IG_L2(ClusteredRenewals)
+```
